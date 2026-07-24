@@ -154,9 +154,12 @@
   .cell{
     aspect-ratio:1/1;border-radius:8px;background:var(--surface-2);position:relative;
     display:flex;align-items:center;justify-content:center;font-size:10px;color:var(--muted);font-weight:600;
+    cursor:pointer;transition:transform .1s ease;
   }
-  .cell.empty{background:transparent;}
+  .cell:active{transform:scale(0.93);}
+  .cell.empty{background:transparent;cursor:default;}
   .cell.today{box-shadow:0 0 0 2px var(--accent) inset;}
+  .cell.selected{box-shadow:0 0 0 2px var(--ink) inset;font-weight:800;}
   .weekday-row{display:grid;grid-template-columns:repeat(7,1fr);gap:6px;margin-bottom:6px;}
   .weekday-row span{font-size:9.5px;color:var(--muted);text-align:center;text-transform:uppercase;letter-spacing:0.04em;font-weight:700;}
 
@@ -359,6 +362,7 @@
   const STORAGE_TX_KEY = 'even:transactions';
   const STORAGE_LIAB_KEY = 'even:liabilities';
   const STORAGE_INST_KEY = 'even:installments';
+  const STORAGE_CAT_KEY = 'even:categories';
 
   let config = null; // { monthlyBudget }
   let transactions = []; // { id, amount, note, date, category }
@@ -366,6 +370,7 @@
   let installments = []; // { id, name, amount, startMonth, endMonth } (months as "YYYY-MM")
   let page = 'tracker'; // 'budget' | 'tracker' | 'chart' | 'fixed'
   let view = 'weekly'; // tracker page granularity
+  let trackerDayDate = null; // focused day for the Daily view, set by tapping a rhythm cell; null = today
   let chartView = 'monthly'; // chart page granularity
   let trendCategoryId = 'food'; // selected category for the 12-month trend chart
   let ready = false;
@@ -376,27 +381,28 @@
   let chartDate = new Date(today); // reference date for chart page navigation
   let fixedMonthDate = new Date(today.getFullYear(), today.getMonth(), 1); // reference month for fixed costs page
 
-  const CATEGORIES = [
-    { id: 'food', label: 'Food (buy)', color: 'var(--cat-food)' },
-    { id: 'grocery', label: 'Grocery', color: 'var(--cat-grocery)' },
-    { id: 'transport', label: 'Transportation', color: 'var(--cat-transport)' },
-    { id: 'dayout', label: 'Day out', color: 'var(--cat-dayout)' },
-    { id: 'shopping', label: 'Shopping', color: 'var(--cat-shopping)' },
-    { id: 'gadget', label: 'Gadget', color: 'var(--cat-gadget)' },
-    { id: 'health', label: 'Health', color: 'var(--cat-health)' },
-    { id: 'beauty', label: 'Beauty', color: 'var(--cat-beauty)' },
-    { id: 'communication', label: 'Communication', color: 'var(--cat-communication)' },
-    { id: 'others', label: 'Others', color: 'var(--cat-others)' }
+  const DEFAULT_CATEGORIES = [
+    { id: 'food', label: 'Food (buy)', color: '#C97B4A' },
+    { id: 'grocery', label: 'Grocery', color: '#4A8FC9' },
+    { id: 'transport', label: 'Transportation', color: '#3E4FB0' },
+    { id: 'dayout', label: 'Day out', color: '#7A4FA0' },
+    { id: 'shopping', label: 'Shopping', color: '#C9A227' },
+    { id: 'gadget', label: 'Gadget', color: '#2E8B8B' },
+    { id: 'health', label: 'Health', color: '#C0546B' },
+    { id: 'beauty', label: 'Beauty', color: '#D98BC2' },
+    { id: 'communication', label: 'Communication', color: '#5C8AA6' },
+    { id: 'others', label: 'Others', color: '#8B8695' }
   ];
+  let categories = []; // populated in loadData(), from storage or DEFAULT_CATEGORIES
   const UNCATEGORIZED = { id: '', label: 'Uncategorized', color: 'var(--cat-none)' };
 
   function getCategory(id){
-    return CATEGORIES.find(c => c.id === id) || UNCATEGORIZED;
+    return categories.find(c => c.id === id) || UNCATEGORIZED;
   }
 
   function categoryOptionsHtml(selectedId){
     const opts = [`<option value="" ${!selectedId ? 'selected' : ''}>No category</option>`];
-    CATEGORIES.forEach(c=>{
+    categories.forEach(c=>{
       opts.push(`<option value="${c.id}" ${selectedId===c.id ? 'selected' : ''}>${c.label}</option>`);
     });
     return opts.join('');
@@ -482,6 +488,10 @@
       const instRaw = localStorage.getItem(STORAGE_INST_KEY);
       installments = instRaw ? JSON.parse(instRaw) : [];
     }catch(e){ installments = []; }
+    try{
+      const catRaw = localStorage.getItem(STORAGE_CAT_KEY);
+      categories = catRaw ? JSON.parse(catRaw) : DEFAULT_CATEGORIES.map(c=>({...c}));
+    }catch(e){ categories = DEFAULT_CATEGORIES.map(c=>({...c})); }
     ready = true;
     render();
   }
@@ -524,12 +534,22 @@
       saveError = true;
     }
   }
+  async function saveCategories(){
+    try{
+      localStorage.setItem(STORAGE_CAT_KEY, JSON.stringify(categories));
+      saveError = false;
+    }catch(e){
+      console.error('Failed to save categories', e);
+      saveError = true;
+    }
+  }
 
   async function retryLastSave(){
     await saveConfig();
     await saveTransactions();
     await saveLiabilities();
     await saveInstallments();
+    await saveCategories();
     render();
   }
 
@@ -588,7 +608,7 @@
 
   function renderBudgetPage(){
     const hasConfig = !!(config && config.monthlyBudget);
-    const backupData = hasConfig ? JSON.stringify({config, transactions, liabilities, installments}) : '';
+    const backupData = hasConfig ? JSON.stringify({config, transactions, liabilities, installments, categories}) : '';
     app.innerHTML = `
       <div class="header">
         <div>
@@ -610,6 +630,27 @@
         <input id="budget-input" type="number" inputmode="numeric" placeholder="e.g. 4500000" value="${hasConfig?config.monthlyBudget:''}" style="margin-bottom:16px;">
         <button class="add-btn" id="budget-save">${hasConfig ? 'Save' : 'Start tracking'}</button>
       </div>
+
+      ${hasConfig ? `
+      <div class="card">
+        <div class="section-head">
+          <div class="card-title" style="margin-bottom:0;">Categories</div>
+          <div class="add-link" id="add-category">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"></path></svg>
+            Add
+          </div>
+        </div>
+        ${categories.map(c=>`
+          <div class="fixed-row" data-cat-id="${c.id}">
+            <div class="fixed-left">
+              <div class="fixed-name" style="display:flex;align-items:center;gap:8px;">
+                <span class="legend-dot" style="background:${c.color};flex-shrink:0;"></span>${escapeHtml(c.label)}
+              </div>
+            </div>
+          </div>
+        `).join('')}
+      </div>
+      ` : ''}
 
       ${hasConfig ? `
       <div class="card">
@@ -645,6 +686,13 @@
     });
 
     if(hasConfig){
+      document.getElementById('add-category').addEventListener('click', ()=>openCategoryModal(null));
+      document.querySelectorAll('[data-cat-id]').forEach(row=>{
+        row.addEventListener('click', ()=>openCategoryModal(row.dataset.catId));
+      });
+    }
+
+    if(hasConfig){
       const copyBtn = document.getElementById('backup-copy');
       copyBtn.addEventListener('click', ()=>{
         const status = document.getElementById('backup-copy-status');
@@ -674,10 +722,12 @@
         transactions = parsed.transactions;
         liabilities = Array.isArray(parsed.liabilities) ? parsed.liabilities : [];
         installments = Array.isArray(parsed.installments) ? parsed.installments : [];
+        categories = Array.isArray(parsed.categories) ? parsed.categories : DEFAULT_CATEGORIES.map(c=>({...c}));
         await saveConfig();
         await saveTransactions();
         await saveLiabilities();
         await saveInstallments();
+        await saveCategories();
         page = 'tracker';
         render();
       }catch(e){
@@ -697,6 +747,9 @@
     const dailyBudget = config.monthlyBudget / dim;
     const weeklyBudget = dailyBudget * 7;
     const {start:weekStart, end:weekEnd} = getWeekRange(today);
+    const focusedDay = trackerDayDate || today;
+    const focusedISO = toISO(focusedDay);
+    const {start:focusedWeekStart, end:focusedWeekEnd} = getWeekRange(focusedDay);
 
     let budget, spent, label, sub, cells, cellLabels;
 
@@ -716,7 +769,7 @@
       for(let d=1; d<=dim; d++){
         const iso = toISO(new Date(y,m,d));
         const daySpent = spentOn(iso);
-        cells.push({ratio: daySpent/dailyBudget, isToday: iso===todayISO, label:String(d)});
+        cells.push({ratio: daySpent/dailyBudget, isToday: iso===todayISO, iso, label:String(d)});
       }
       cellLabels = ['M','T','W','T','F','S','S'];
     } else if(view==='weekly'){
@@ -733,20 +786,20 @@
         const d = new Date(weekStart); d.setDate(weekStart.getDate()+i);
         const iso = toISO(d);
         const daySpent = spentOn(iso);
-        cells.push({ratio: daySpent/dailyBudget, isToday: iso===todayISO, label:String(d.getDate())});
+        cells.push({ratio: daySpent/dailyBudget, isToday: iso===todayISO, iso, label:String(d.getDate())});
       }
       cellLabels = ['M','T','W','T','F','S','S'];
     } else {
       budget = dailyBudget;
-      spent = spentOn(todayISO);
-      label = 'Left today';
-      sub = today.toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
+      spent = spentOn(focusedISO);
+      label = focusedISO===todayISO ? 'Left today' : 'Left that day';
+      sub = focusedDay.toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'});
       cells = [];
       for(let i=0;i<7;i++){
-        const d = new Date(weekStart); d.setDate(weekStart.getDate()+i);
+        const d = new Date(focusedWeekStart); d.setDate(focusedWeekStart.getDate()+i);
         const iso = toISO(d);
         const daySpent = spentOn(iso);
-        cells.push({ratio: daySpent/dailyBudget, isToday: iso===todayISO, label:String(d.getDate())});
+        cells.push({ratio: daySpent/dailyBudget, isToday: iso===todayISO, selected: iso===focusedISO, iso, label:String(d.getDate())});
       }
       cellLabels = ['M','T','W','T','F','S','S'];
     }
@@ -765,6 +818,7 @@
   function getPeriodTransactions(){
     const y = today.getFullYear(), m = today.getMonth();
     const {start:weekStart, end:weekEnd} = getWeekRange(today);
+    const focusedISO = toISO(trackerDayDate || today);
     let filtered;
     if(view==='monthly'){
       filtered = transactions.filter(t=>{
@@ -777,7 +831,7 @@
         return d>=weekStart && d<=weekEnd;
       });
     } else {
-      filtered = transactions.filter(t=>t.date===todayISO);
+      filtered = transactions.filter(t=>t.date===focusedISO);
     }
     return filtered.slice().sort((a,b)=> b.date.localeCompare(a.date) || b.id.localeCompare(a.id));
   }
@@ -813,7 +867,7 @@
           <input id="tx-note" class="note-input" type="text" placeholder="What for?">
         </div>
         <div class="form-row">
-          <input id="tx-date" type="date" value="${todayISO}" max="${todayISO}">
+          <input id="tx-date" type="date" value="${view==='daily' ? toISO(trackerDayDate||today) : todayISO}" max="${todayISO}">
         </div>
         <div class="form-row">
           <select id="tx-category" class="cat-select">${categoryOptionsHtml('')}</select>
@@ -834,6 +888,7 @@
         <div class="bar-track"><div class="bar-fill${moodClass}" style="width:${pct}%"></div></div>
         <div class="bar-meta"><span><b>${fmt(p.spent)}</b> spent</span><span><b>${fmt(p.budget)}</b> budget</span></div>
         <div class="change-budget-link" id="change-budget-link">Change monthly budget</div>
+        ${(view==='daily' && trackerDayDate && toISO(trackerDayDate)!==todayISO) ? `<div class="change-budget-link" id="back-to-today" style="margin-left:14px;">Back to today</div>` : ''}
       </div>
 
       <div class="rhythm">
@@ -844,13 +899,14 @@
             if(c===null) return '<div class="cell empty"></div>';
             const bg = cellColor(c.ratio);
             const todayClass = c.isToday ? ' today' : '';
-            return `<div class="cell${todayClass}" style="background:${bg}">${c.label}</div>`;
+            const selectedClass = c.selected ? ' selected' : '';
+            return `<div class="cell${todayClass}${selectedClass}" data-cell-iso="${c.iso}" style="background:${bg}">${c.label}</div>`;
           }).join('')}
         </div>
       </div>
 
       <div class="card">
-        <div class="card-title">${view==='monthly'?'This month':view==='weekly'?'This week':'Today'}</div>
+        <div class="card-title">${view==='monthly'?'This month':view==='weekly'?'This week':((trackerDayDate && toISO(trackerDayDate)!==todayISO) ? (trackerDayDate.toLocaleDateString('en-US',{month:'short',day:'numeric'})) : 'Today')}</div>
         ${periodTx.length===0
           ? `<div class="empty-state">Nothing logged yet for this period.</div>`
           : periodTx.map(t=>{
@@ -879,10 +935,19 @@
     `;
 
     document.getElementById('change-budget-link').addEventListener('click', ()=>{ page='budget'; render(); });
+    const backToTodayBtn = document.getElementById('back-to-today');
+    if(backToTodayBtn) backToTodayBtn.addEventListener('click', ()=>{ trackerDayDate = null; render(); });
     const retryBtn = document.getElementById('retry-save');
     if(retryBtn) retryBtn.addEventListener('click', retryLastSave);
     document.querySelectorAll('.segmented button').forEach(btn=>{
       btn.addEventListener('click', ()=>{ view = btn.dataset.view; render(); });
+    });
+    document.querySelectorAll('.cell[data-cell-iso]').forEach(cell=>{
+      cell.addEventListener('click', ()=>{
+        trackerDayDate = new Date(cell.dataset.cellIso+'T00:00:00');
+        view = 'daily';
+        render();
+      });
     });
     document.getElementById('tx-add').addEventListener('click', addTransaction);
     document.querySelectorAll('.tx-del').forEach(btn=>{
@@ -1210,7 +1275,7 @@
 
   function renderCategoryShareByMonth(){
     const monthsMeta = last12MonthKeys();
-    const seriesDefs = CATEGORIES.map(c=>({id:c.id, label:c.label, color:c.color}))
+    const seriesDefs = categories.map(c=>({id:c.id, label:c.label, color:c.color}))
       .concat([{id:'', label:'Uncategorized', color:'var(--cat-none)'}]);
     const monthsData = monthsMeta.map(m=>{
       const totals = categoryTotalsForMonth(m.ym);
@@ -1243,7 +1308,7 @@
     const pct = prevVal ? (delta/prevVal*100) : 0;
     const arrow = delta>0 ? '▲' : (delta<0 ? '▼' : '—');
     const deltaColor = delta>0 ? 'var(--coral)' : (delta<0 ? 'var(--mint)' : 'var(--muted)');
-    const options = CATEGORIES.map(c=>`<option value="${c.id}" ${c.id===trendCategoryId?'selected':''}>${c.label}</option>`).join('')
+    const options = categories.map(c=>`<option value="${c.id}" ${c.id===trendCategoryId?'selected':''}>${c.label}</option>`).join('')
       + `<option value="" ${trendCategoryId===''?'selected':''}>Uncategorized</option>`;
     const lineHtml = renderLineChart(monthsMeta.map(m=>m.label), values, selected.color);
     return `
@@ -1452,6 +1517,8 @@
     const ym = monthKey(fixedMonthDate);
     const total = getFixedTotalForMonth(ym);
     const activeInstallments = installments.filter(i=> ym>=i.startMonth && ym<=i.endMonth);
+    const liabTotal = liabilitiesTotalCurrent();
+    const instTotal = installmentsTotalForMonth(ym);
 
     app.innerHTML = `
       <div class="header">
@@ -1476,6 +1543,16 @@
         <div class="hero-label">Fixed cost for ${monthKeyLabel(ym)}</div>
         <div class="hero-amount">${fmt(total)}</div>
         <div class="hero-sub">${liabilities.length} liabilit${liabilities.length===1?'y':'ies'} · ${activeInstallments.length} active installment${activeInstallments.length===1?'':'s'}</div>
+        <div class="split-readout">
+          <div class="split-chip">
+            <div class="split-lbl">Liabilities</div>
+            <div class="split-val">${fmt(liabTotal)}</div>
+          </div>
+          <div class="split-chip">
+            <div class="split-lbl">Installments</div>
+            <div class="split-val">${fmt(instTotal)}</div>
+          </div>
+        </div>
       </div>
 
       <div class="card">
@@ -1553,6 +1630,55 @@
     });
 
     wireNav();
+  }
+
+  function openCategoryModal(id){
+    const existing = id ? categories.find(c=>c.id===id) : null;
+    const overlay = document.createElement('div');
+    overlay.className = 'overlay';
+    overlay.innerHTML = `
+      <div class="modal">
+        <h3>${existing ? 'Edit category' : 'Add category'}</h3>
+        <label class="field-label">Name</label>
+        <input id="cat-name" type="text" placeholder="e.g. Pets" value="${existing ? escapeHtml(existing.label) : ''}" style="margin-bottom:10px;">
+        <label class="field-label">Color</label>
+        <input id="cat-color" type="color" value="${existing ? existing.color : '#8B8695'}" style="margin-bottom:10px;height:44px;padding:6px;">
+        <div class="modal-actions">
+          ${existing ? `<button class="btn-secondary" id="cat-delete">Delete</button>` : `<button class="btn-secondary" id="cat-cancel">Cancel</button>`}
+          <button class="btn-primary" id="cat-save">Save</button>
+        </div>
+        ${existing ? `<div class="hint">Deleting this category moves any transactions using it to "No category" — nothing gets deleted.</div>` : ''}
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    overlay.addEventListener('click', (e)=>{ if(e.target===overlay) overlay.remove(); });
+    const cancelBtn = document.getElementById('cat-cancel');
+    if(cancelBtn) cancelBtn.addEventListener('click', ()=>overlay.remove());
+    const deleteBtn = document.getElementById('cat-delete');
+    if(deleteBtn) deleteBtn.addEventListener('click', async ()=>{
+      categories = categories.filter(c=>c.id!==id);
+      transactions.forEach(t=>{ if(t.category===id) t.category=''; });
+      await saveCategories();
+      await saveTransactions();
+      overlay.remove();
+      render();
+    });
+    document.getElementById('cat-save').addEventListener('click', async ()=>{
+      const nameInput = document.getElementById('cat-name');
+      const colorInput = document.getElementById('cat-color');
+      const name = nameInput.value.trim();
+      const color = colorInput.value;
+      if(!name){ nameInput.style.borderColor='var(--clay)'; return; }
+      if(existing){
+        existing.label = name;
+        existing.color = color;
+      } else {
+        categories.push({ id: 'cat_'+Date.now()+'_'+Math.random().toString(36).slice(2,7), label: name, color });
+      }
+      await saveCategories();
+      overlay.remove();
+      render();
+    });
   }
 
   function openLiabilityModal(id){

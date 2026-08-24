@@ -463,6 +463,40 @@
     return new Intl.NumberFormat('id-ID',{style:'currency',currency:'IDR',maximumFractionDigits:0}).format(n);
   }
   function daysInMonth(y,m){ return new Date(y,m+1,0).getDate(); }
+
+  function getCycleStartDay(){
+    return (config && config.startDay) ? config.startDay : 1;
+  }
+
+  function clampStartDay(year, month, startDay){
+    return Math.min(startDay, daysInMonth(year, month));
+  }
+
+  function getCycleBounds(refDate){
+    const startDay = getCycleStartDay();
+    const y = refDate.getFullYear(), m = refDate.getMonth();
+    const effectiveThisMonth = clampStartDay(y, m, startDay);
+    let cycleStart;
+    if(refDate.getDate() >= effectiveThisMonth){
+      cycleStart = new Date(y, m, effectiveThisMonth);
+    } else {
+      const py = m===0 ? y-1 : y;
+      const pm = m===0 ? 11 : m-1;
+      cycleStart = new Date(py, pm, clampStartDay(py, pm, startDay));
+    }
+    let ny = cycleStart.getFullYear(), nm = cycleStart.getMonth()+1;
+    if(nm>11){ nm=0; ny+=1; }
+    const nextCycleStart = new Date(ny, nm, clampStartDay(ny, nm, startDay));
+    const cycleEnd = new Date(nextCycleStart);
+    cycleEnd.setDate(cycleEnd.getDate()-1);
+    return { start: cycleStart, end: cycleEnd };
+  }
+
+  function daysInCycle(refDate){
+    const { start, end } = getCycleBounds(refDate);
+    return Math.round((end - start) / 86400000) + 1;
+  }
+
   function getWeekRange(d){
     const day = d.getDay(); // 0 sun .. 6 sat
     const diffToMonday = day===0 ? -6 : 1-day;
@@ -628,6 +662,9 @@
         <p>One number in, three views out. BUDGGGET splits it evenly across the month and the week, and tracks what's left as you log.</p>
         <label class="field-label">Monthly budget (IDR)</label>
         <input id="budget-input" type="number" inputmode="numeric" placeholder="e.g. 4500000" value="${hasConfig?config.monthlyBudget:''}" style="margin-bottom:16px;">
+        <label class="field-label">Start day of month</label>
+        <input id="startday-input" type="number" inputmode="numeric" min="1" max="28" placeholder="1" value="${hasConfig?(config.startDay||1):1}" style="margin-bottom:8px;">
+        <div class="hint" style="margin-top:0;margin-bottom:16px;">If you're paid on the 25th, set this to 25 — your "month" will run from the 25th to the 24th of the next month instead of the calendar month. Limited to day 1–28 to keep every month consistent. This only affects the Tracker page's Monthly view and daily budget; Charts and Monthlies still follow calendar months.</div>
         <button class="add-btn" id="budget-save">${hasConfig ? 'Save' : 'Start tracking'}</button>
       </div>
 
@@ -677,9 +714,13 @@
 
     document.getElementById('budget-save').addEventListener('click', async ()=>{
       const input = document.getElementById('budget-input');
+      const startDayInput = document.getElementById('startday-input');
       const val = parseFloat(input.value);
       if(!val || val<=0){ input.style.borderColor='var(--clay)'; return; }
-      config = { monthlyBudget: val };
+      let startDay = parseInt(startDayInput.value, 10);
+      if(!startDay || startDay<1) startDay = 1;
+      if(startDay>28) startDay = 28;
+      config = { monthlyBudget: val, startDay };
       await saveConfig();
       page = 'tracker';
       render();
@@ -742,14 +783,14 @@
   // ---------- TRACKER PAGE ----------
 
   function computePeriod(){
-    const y = today.getFullYear(), m = today.getMonth();
-    const dim = daysInMonth(y,m);
-    const dailyBudget = config.monthlyBudget / dim;
+    const dailyBudget = config.monthlyBudget / daysInCycle(today);
     const weeklyBudget = dailyBudget * 7;
     const {start:weekStart, end:weekEnd} = getWeekRange(today);
     const focusedDay = trackerDayDate || today;
     const focusedISO = toISO(focusedDay);
     const {start:focusedWeekStart, end:focusedWeekEnd} = getWeekRange(focusedDay);
+    const {start:cycleStart, end:cycleEnd} = getCycleBounds(today);
+    const startDay = getCycleStartDay();
 
     let budget, spent, label, sub, cells, cellLabels;
 
@@ -757,19 +798,23 @@
       budget = config.monthlyBudget;
       const monthTx = transactions.filter(t=>{
         const d = new Date(t.date+'T00:00:00');
-        return d.getFullYear()===y && d.getMonth()===m;
+        return d>=cycleStart && d<=cycleEnd;
       });
       spent = monthTx.reduce((s,t)=>s+t.amount,0);
       label = 'Left this month';
-      sub = today.toLocaleDateString('en-US',{month:'long',year:'numeric'});
-      const firstDow = new Date(y,m,1).getDay();
+      sub = startDay===1
+        ? today.toLocaleDateString('en-US',{month:'long',year:'numeric'})
+        : `${cycleStart.toLocaleDateString('en-US',{month:'short',day:'numeric'})} – ${cycleEnd.toLocaleDateString('en-US',{month:'short',day:'numeric'})}`;
+      const firstDow = cycleStart.getDay();
       const offset = firstDow===0 ? 6 : firstDow-1;
       cells = [];
       for(let i=0;i<offset;i++) cells.push(null);
-      for(let d=1; d<=dim; d++){
-        const iso = toISO(new Date(y,m,d));
+      const cursor = new Date(cycleStart);
+      while(cursor <= cycleEnd){
+        const iso = toISO(cursor);
         const daySpent = spentOn(iso);
-        cells.push({ratio: daySpent/dailyBudget, isToday: iso===todayISO, iso, label:String(d)});
+        cells.push({ratio: daySpent/dailyBudget, isToday: iso===todayISO, iso, label:String(cursor.getDate())});
+        cursor.setDate(cursor.getDate()+1);
       }
       cellLabels = ['M','T','W','T','F','S','S'];
     } else if(view==='weekly'){

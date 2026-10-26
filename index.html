@@ -501,7 +501,9 @@
     const day = d.getDay(); // 0 sun .. 6 sat
     const diffToMonday = day===0 ? -6 : 1-day;
     const monday = new Date(d); monday.setDate(d.getDate()+diffToMonday);
+    monday.setHours(0,0,0,0); // start of Monday, not "now" on Monday
     const sunday = new Date(monday); sunday.setDate(monday.getDate()+6);
+    sunday.setHours(23,59,59,999); // end of Sunday
     return {start:monday, end:sunday};
   }
 
